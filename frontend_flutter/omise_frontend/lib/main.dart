@@ -18,7 +18,7 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         useMaterial3: true,
       ),
-      home: const PaymentScreen(),
+      home: const PaymentScreen(userId: 1), // TODO: pass actual user ID here when available
       debugShowCheckedModeBanner: false,
     );
   }

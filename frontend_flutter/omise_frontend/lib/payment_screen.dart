@@ -5,7 +5,9 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class PaymentScreen extends StatefulWidget {
-  const PaymentScreen({super.key});
+  final int userId; // Add userId parameter
+  
+  const PaymentScreen({super.key, required this.userId});
 
   @override
   State<PaymentScreen> createState() => _PaymentScreenState();
@@ -50,8 +52,11 @@ class _PaymentScreenState extends State<PaymentScreen> {
     });
 
     try {
+      // Add user_id to all requests
+      payload['user_id'] = widget.userId;
+      
       final res = await http.post(
-        Uri.parse('$backendUrl/charge'),
+        Uri.parse('$backendUrl/payments/charge'), // Updated endpoint
         headers: {'Content-Type': 'application/json'},
         body: json.encode(payload),
       );
@@ -62,32 +67,61 @@ class _PaymentScreenState extends State<PaymentScreen> {
         return;
       }
 
-      // Omise charge object passthrough from your Go server
-      _chargeId = body['id'] as String?;
-      final status = (body['status'] as String?) ?? 'unknown';
-      final paid = body['paid'] == true;
-      final authorizeUri = body['authorize_uri'] as String?;
-      final source = body['source'] as Map<String, dynamic>?;
+      // Handle different response formats based on payment type
+      if (body['type'] == 'credit_card') {
+        _chargeId = body['charge_id'] as String?;
+        final status = (body['status'] as String?) ?? 'unknown';
+        final authorized = body['authorized'] == true;
+        
+        final summary = StringBuffer('Charge ${_chargeId ?? ''} → status: $status');
+        if (authorized) summary.write(' (authorized)');
+        await _setStatus(summary.toString());
+        
+      } else if (body['type'] == 'promptpay') {
+        _chargeId = body['charge_id'] as String?;
+        final status = (body['status'] as String?) ?? 'unknown';
+        _qrUrl = body['qr_image'] as String?;
+        
+        final summary = StringBuffer('Charge ${_chargeId ?? ''} → status: $status');
+        if (_qrUrl != null) summary.write('\nShow QR and ask user to pay.');
+        await _setStatus(summary.toString());
+        
+      } else if (body['type'] == 'truemoney' || body['type'] == 'internet_banking') {
+        _chargeId = body['charge_id'] as String?;
+        final status = (body['status'] as String?) ?? 'unknown';
+        _authorizeUri = body['authorize_uri'] as String?;
+        
+        final summary = StringBuffer('Charge ${_chargeId ?? ''} → status: $status');
+        if (_authorizeUri != null) summary.write('\nNeeds authorization in browser.');
+        await _setStatus(summary.toString());
+      } else {
+        // Fallback to original Omise response parsing
+        _chargeId = body['id'] as String?;
+        final status = (body['status'] as String?) ?? 'unknown';
+        final paid = body['paid'] == true;
+        final authorizeUri = body['authorize_uri'] as String?;
+        final source = body['source'] as Map<String, dynamic>?;
 
-      // PromptPay QR (source.scannable_code.image.download_uri)
-      String? qr;
-      if (source != null) {
-        final scannable = source['scannable_code'] as Map<String, dynamic>?;
-        final image = scannable?['image'] as Map<String, dynamic>?;
-        qr = image?['download_uri'] as String?;
+        // PromptPay QR (source.scannable_code.image.download_uri)
+        String? qr;
+        if (source != null) {
+          final scannable = source['scannable_code'] as Map<String, dynamic>?;
+          final image = scannable?['image'] as Map<String, dynamic>?;
+          qr = image?['download_uri'] as String?;
+        }
+
+        setState(() {
+          _authorizeUri = authorizeUri;
+          _qrUrl = qr;
+        });
+
+        final summary = StringBuffer('Charge ${_chargeId ?? ''} → status: $status');
+        if (paid) summary.write(' (paid)');
+        if (_authorizeUri != null) summary.write('\nNeeds authorization in browser.');
+        if (_qrUrl != null) summary.write('\nShow QR and ask user to pay.');
+
+        await _setStatus(summary.toString());
       }
-
-      setState(() {
-        _authorizeUri = authorizeUri;
-        _qrUrl = qr;
-      });
-
-      final summary = StringBuffer('Charge ${_chargeId ?? ''} → status: $status');
-      if (paid) summary.write(' (paid)');
-      if (_authorizeUri != null) summary.write('\nNeeds authorization in browser.');
-      if (_qrUrl != null) summary.write('\nShow QR and ask user to pay.');
-
-      await _setStatus(summary.toString());
     } catch (e) {
       await _setStatus('Error: $e');
     } finally {
@@ -147,7 +181,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
         expMonth: 12,
         expYear: 2029,
         cvc: '123',
-      ); // test card; see Omise docs for more. :contentReference[oaicite:3]{index=3}
+      );
 
       // 2) Send token to server for charging with SECRET key
       await _processPayment({
@@ -155,7 +189,6 @@ class _PaymentScreenState extends State<PaymentScreen> {
         'currency': 'THB',
         'paymentType': 'credit_card',
         'token': token,
-        // include return_uri if your account enforces 3DS
         'return_uri': returnUri,
       });
     } catch (e) {
@@ -202,7 +235,6 @@ class _PaymentScreenState extends State<PaymentScreen> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     final pkDisplay = publicKey.isEmpty ? '(missing OMISE_PUBLIC_KEY)' : publicKey;
@@ -225,6 +257,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
                   SelectableText(pkDisplay, style: const TextStyle(fontSize: 12)),
                   const SizedBox(height: 8),
                   Text('Backend: $backendUrl'),
+                  Text('User ID: ${widget.userId}'),
                 ]),
               ),
             ),
