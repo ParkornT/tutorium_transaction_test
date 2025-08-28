@@ -2,89 +2,78 @@ package handlers
 
 import (
 	"encoding/json"
-	"io"
 	"log"
-	"net/http"
 
+	"github.com/gofiber/fiber/v2"
 	omise "github.com/omise/omise-go"
 	"github.com/omise/omise-go/operations"
 )
 
 type WebhookHandler struct {
-	client    *omise.Client
-	dbHandler interface {
+	Client   *omise.Client
+	Upserter interface {
 		UpsertTransactionFromCharge(*omise.Charge) error
 	}
 }
 
-func NewWebhookHandler(client *omise.Client, dbHandler interface {
+func NewWebhookHandler(client *omise.Client, upserter interface {
 	UpsertTransactionFromCharge(*omise.Charge) error
 }) *WebhookHandler {
-	return &WebhookHandler{client: client, dbHandler: dbHandler}
+	return &WebhookHandler{Client: client, Upserter: upserter}
 }
 
-// HandleWebhook verifies event by ID via Omise Events API, then reacts to charge events.
-func (h *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+func (h *WebhookHandler) HandleWebhook(c *fiber.Ctx) error {
+	// Only POST
+	if c.Method() != fiber.MethodPost {
+		return c.Status(fiber.StatusMethodNotAllowed).JSON(fiber.Map{"error": "method not allowed"})
 	}
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	// Minimal envelope to pull event ID out of the incoming payload
+	// Minimal envelope
 	var envelope struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope.ID == "" {
-		http.Error(w, "invalid payload: missing event id", http.StatusBadRequest)
-		return
+	if err := c.BodyParser(&envelope); err != nil || envelope.ID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid payload: missing event id"})
 	}
 
-	// Verify: retrieve the event back from Omise using your secret key
-	// Verify: retrieve the event back from Omise
+	// Verify event by fetching from Omise (recommended)
 	ev := &omise.Event{}
-	if err := h.client.Do(ev, &operations.RetrieveEvent{EventID: envelope.ID}); err != nil {
-		log.Printf("Webhook: event verification failed for id=%s: %v", envelope.ID, err)
-		http.Error(w, "event verification failed", http.StatusBadRequest)
-		return
+	if err := h.Client.Do(ev, &operations.RetrieveEvent{EventID: envelope.ID}); err != nil {
+		log.Printf("webhook verify failed id=%s err=%v", envelope.ID, err)
+		// Bad request will not be retried by Omise; if you want retries, return 5xx here.
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "event verification failed"})
 	}
 
-	// For charge-related events
-	switch ev.Key {
-	case "charge.complete", "charge.capture", "charge.failed", "charge.expired", "charge.reversed":
-		raw, err := json.Marshal(ev.Data)
-		if err != nil {
-			log.Printf("Webhook: marshal ev.Data failed: %v", err)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		var data struct {
-			ID     string `json:"id"`
-			Object string `json:"object"`
-		}
-		if err := json.Unmarshal(raw, &data); err != nil || data.Object != "charge" || data.ID == "" {
-			log.Printf("Webhook: unexpected event data for key=%s; data=%s", ev.Key, string(raw))
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		ch := &omise.Charge{}
-		if err := h.client.Do(ch, &operations.RetrieveCharge{ChargeID: data.ID}); err != nil {
-			log.Printf("Webhook: retrieve charge %s failed: %v", data.ID, err)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		if err := h.dbHandler.UpsertTransactionFromCharge(ch); err != nil {
-			log.Printf("Failed to upsert transaction: %v", err)
-		}
-		log.Printf("Webhook: charge %s status=%s amount=%d source=%v", ch.ID, ch.Status, ch.Amount, ch.Source)
+	// Only handle events whose data.object == "charge"
+	var data struct {
+		ID     string `json:"id"`
+		Object string `json:"object"`
 	}
+	raw, err := json.Marshal(ev.Data)
+	if err != nil {
+		log.Printf("webhook marshal ev.Data failed id=%s err=%v", envelope.ID, err)
+		return c.SendStatus(fiber.StatusInternalServerError) // trigger retry
+	}
+	if err := json.Unmarshal(raw, &data); err != nil || data.Object != "charge" || data.ID == "" {
+		// ignore non-charge events
+		return c.SendStatus(fiber.StatusOK)
+	}
+
+	// Retrieve charge (verify status independently)
+	ch := &omise.Charge{}
+	if err := h.Client.Do(ch, &operations.RetrieveCharge{ChargeID: data.ID}); err != nil {
+		log.Printf("webhook retrieve charge failed charge=%s err=%v", data.ID, err)
+		return c.SendStatus(fiber.StatusInternalServerError) // trigger retry
+	}
+
+	// Idempotent upsert
+	if err := h.Upserter.UpsertTransactionFromCharge(ch); err != nil {
+		log.Printf("webhook upsert failed charge=%s err=%v", ch.ID, err)
+		return c.SendStatus(fiber.StatusInternalServerError) // trigger retry
+	}
+
+	log.Printf("webhook processed event=%s key=%s charge=%s status=%s amount=%d source=%v",
+		envelope.ID, ev.Key, ch.ID, ch.Status, ch.Amount, ch.Source)
+
+	return c.SendStatus(fiber.StatusOK)
 }

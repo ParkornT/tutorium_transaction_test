@@ -14,6 +14,11 @@ type User struct {
 	Gender         string  `gorm:"size:6"`
 	PhoneNumber    string  `gorm:"size:20"`
 	Balance        float64 `gorm:"type:numeric(12,2);default:0;check:balance >= 0"`
+
+	//TODO : uncomment below
+	//Learner *Learner
+	//Teacher *Teacher
+	//Admin   *Admin
 }
 
 // ---- DOC-ONLY STRUCT FOR SWAGGER BELOW ----

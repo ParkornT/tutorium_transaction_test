@@ -58,7 +58,7 @@ func main() {
 	// Create Fiber app
 	app := fiber.New()
 
-	// Middleware
+	// Middleware (Cors) TODO: integrate middleware into transaction handlers, or use CORS idc
 	app.Use(logger.New())
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",

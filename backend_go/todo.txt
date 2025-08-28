@@ -1,0 +1,39 @@
+TODO: integrate transactions into https://github.com/a2n2k3p4/tutorium-backend
+    -Add/confirm Transaction (unique charge_id, datatypes.JSONMap for meta, RawPayload []byte, UserID *uint, Status, Channel).
+
+Omise Client
+    -modify OMISE_PUBLIC_KEY / OMISE_SECRET_KEY from .env for testing.
+    -make sure to have .gitignore to ignore .env file correctly.
+
+Testing
+    -If testing through localhost, forward the localhost to the internet using instruction below :
+        1) download ngrok and type "ngrok http 8080" to forward 8080 port to internet (make sure your backend(main.go) is running).
+        2) follow the instruction and set up an account and set authorization token. run "ngrok http 8080" again.
+        3) add {Domain Name}/webhook/omise as omise endpoint (ex:https://6274e840f90b.ngrok-free.app/webhooks/omise). Domain name is from "Forwarding {Doamin name} -> http://localhost:8080 in terminal
+   	 -To test: run flutter's main.dart. 
+	4) In frontend(flutter), when we send Internet banking transaction, the omise will add a pending transaction and database will also add a transaction. (The test is using user ID 1 when making transaction)
+	5) After clicking "success" on authorization page, the webhook should receive a POST request and user balance will be updated in database.
+
+        -Validate backend's response, webhook delivery and retry behavior.
+        -from Omise.co, Charges should show up after a frontend's transaction request
+
+
+Swagger
+    - add swagger decriptions if you are free (for tester, not neccessary).
+
+Routes
+    Create allroutes.go and register:
+        GET /health, 
+        POST /payments/charge, 
+        GET /payments/transactions, 
+        GET /payments/transactions/:id, 
+        POST /webhooks/omise.
+
+Hardening
+    -Keep webhook path unguessable if possible
+    -integrate middleware into transaction handlers(see main.go)
+
+Main.go
+    -update main.go to handle new files
+
+(If you want "Real Transaction", figure it yourself. Immout.)
